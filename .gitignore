@@ -1,0 +1,90 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# Build output
+dist/
+build/
+.next/
+out/
+.next/
+.next/cache/
+
+# Coverage
+coverage/
+.nyc_output
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+*.pid
+*.seed
+*.pid.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.nova/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Icon?
+*.icloud
+
+# Docker
+docker-compose.override.yml
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+
+# Temporary files
+tmp/
+temp/
+
+# Uploads
+uploads/
+!uploads/.gitkeep
+
+# Testing
+.nyc_output
+
+# Backup files
+*.bak
+
+# Database
+*.db
+*.sqlite
+
+# Misc
+*.tgz
+.yarn/
+.yarnrc.yml
+.pnp.*
