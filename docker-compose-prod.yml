@@ -1,0 +1,232 @@
+version: '3.8'
+
+services:
+  # MongoDB with Replica Set
+  mongodb:
+    image: mongo:6.0
+    container_name: temu_mongodb_prod
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+      - ./infrastructure/mongo/mongo-keyfile:/data/keyfile
+    ports:
+      - "27017:27017"
+    networks:
+      - temu_network_prod
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cluster
+  redis:
+    image: redis:7-alpine
+    container_name: temu_redis_prod
+    restart: always
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - temu_network_prod
+
+  # Backend API (Scalable)
+  backend:
+    image: ${DOCKER_REGISTRY}/temu-backend:${BACKEND_TAG:-latest}
+    container_name: temu_backend_prod
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/temu_clone?authSource=admin&replicaSet=rs0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
+      - PAYPAL_SECRET=${PAYPAL_SECRET}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - S3_BUCKET=${S3_BUCKET}
+      - CDN_URL=${CDN_URL}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - ADMIN_URL=${ADMIN_URL}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - LOG_LEVEL=info
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./logs/backend:/app/logs
+      - ./uploads:/app/uploads
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - temu_network_prod
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+
+  # Frontend
+  frontend:
+    image: ${DOCKER_REGISTRY}/temu-frontend:${FRONTEND_TAG:-latest}
+    container_name: temu_frontend_prod
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${API_URL}
+      - NEXT_PUBLIC_STRIPE_PUBLIC_KEY=${STRIPE_PUBLIC_KEY}
+      - NEXT_PUBLIC_GA_ID=${GA_ID}
+      - NEXT_PUBLIC_SENTRY_DSN=${SENTRY_DSN}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./logs/frontend:/app/logs
+    depends_on:
+      - backend
+    networks:
+      - temu_network_prod
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        delay: 10s
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: temu_nginx_prod
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+      - ./infrastructure/nginx/html:/usr/share/nginx/html:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - temu_network_prod
+
+  # Admin Panel
+  admin:
+    image: ${DOCKER_REGISTRY}/temu-admin:${ADMIN_TAG:-latest}
+    container_name: temu_admin_prod
+    restart: always
+    environment:
+      - REACT_APP_API_URL=${API_URL}
+      - REACT_APP_ADMIN_SECRET=${ADMIN_SECRET}
+    ports:
+      - "4000:4000"
+    networks:
+      - temu_network_prod
+    depends_on:
+      - backend
+
+  # Prometheus for Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: temu_prometheus
+    restart: always
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - temu_network_prod
+
+  # Grafana for Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: temu_grafana
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./infrastructure/monitoring/grafana/dashboards:/etc/grafana/dashboards
+    ports:
+      - "3001:3000"
+    networks:
+      - temu_network_prod
+    depends_on:
+      - prometheus
+
+  # Redis Cluster Sentinel
+  redis-sentinel:
+    image: redis:7-alpine
+    container_name: temu_redis_sentinel
+    restart: always
+    command: >
+      redis-server /etc/redis/sentinel.conf --sentinel
+    volumes:
+      - ./infrastructure/redis/sentinel.conf:/etc/redis/sentinel.conf
+    networks:
+      - temu_network_prod
+    depends_on:
+      - redis
+
+networks:
+  temu_network_prod:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
